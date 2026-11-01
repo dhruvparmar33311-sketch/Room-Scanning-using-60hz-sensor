@@ -1,0 +1,170 @@
+=====================================================================
+ ESP32 3D ROOM SCANNER - WIRING / CONNECTIONS (v2, with power details)
+ ESP32 + 28BYJ-48 stepper (pan) + servo (tilt) + Acconeer XM125 radar
+=====================================================================
+
+BOARD:  ESP32 Dev Module
+
+---------------------------------------------------------------------
+1. SIGNAL PIN MAP (as used in radar_scanner.ino)
+---------------------------------------------------------------------
+
+Component                Component pin     ESP32 pin    Notes
+-----------------------  ----------------  -----------  ------------------------------
+Stepper driver ULN2003   IN1               GPIO 19      28BYJ-48 stepper, horizontal pan
+                         IN2               GPIO 18
+                         IN3               GPIO 5
+                         IN4               GPIO 17
+
+Servo (vertical tilt)    Signal            GPIO 16      Uses ESP32Servo library
+
+Acconeer XM125 radar     TX  (radar out)   GPIO 25      ESP32 Serial2 RX
+(UART)                   RX  (radar in)    GPIO 26      ESP32 Serial2 TX
+                         WAKE_UP           3V3          Tied permanently to the ESP32 3V3 pin
+                         Baud rate         921600       8N1
+
+Start switch / button    One side          GPIO 14      INPUT_PULLUP; grounding it starts a scan
+                         Other side        GND
+
+PC / USB serial          USB cable         -            115200 baud (e.g. COM10 on Windows)
+
+Note on the radar UART: names in the sketch are from the ESP32's point
+of view. Radar TX goes to ESP32 GPIO 25, radar RX goes to ESP32 GPIO 26
+(TX <-> RX crossed).
+
+---------------------------------------------------------------------
+2. POWER WIRING (as built)
+---------------------------------------------------------------------
+
+  Power source : the ESP32 board's 5 V supply (5V / VIN pin; when the
+                 board is powered over USB this is the USB 5 V).
+  Distribution : breadboard power rails. The 5 V rail is fed from the
+                 ESP32 5 V pin, and the GND rail is joined to ESP32 GND.
+
+  Connected to the 5 V rail:
+    - ULN2003 driver board (+) -> powers the 28BYJ-48 stepper
+    - Servo power (red wire)
+    - Acconeer XM125 supply pin
+
+  Connected to the ESP32 3V3 pin:
+    - Acconeer XM125 WAKE_UP pin (held high so the sensor stays awake)
+
+  Connected to the GND rail (common ground):
+    - ESP32 GND, ULN2003 GND, servo GND (brown/black), XM125 GND,
+      start switch (other side)
+
+  Everything shares one ground.
+
+---------------------------------------------------------------------
+3. STEPPER (28BYJ-48 + ULN2003 board)
+---------------------------------------------------------------------
+
+  ESP32 GPIO 19  ->  ULN2003 IN1
+  ESP32 GPIO 18  ->  ULN2003 IN2
+  ESP32 GPIO 5   ->  ULN2003 IN3
+  ESP32 GPIO 17  ->  ULN2003 IN4
+  ULN2003 +/-    ->  5 V rail and GND rail
+  28BYJ-48       ->  plugs into the ULN2003 5-pin connector
+
+  Software order for the Stepper library: IN1, IN3, IN2, IN4
+      Stepper myStepper(2048, IN1, IN3, IN2, IN4);
+  Steps per revolution: 2048   (90 degrees = 512 steps)
+
+---------------------------------------------------------------------
+4. SERVO
+---------------------------------------------------------------------
+
+  Servo signal (orange/yellow)  ->  ESP32 GPIO 16
+  Servo power (red)             ->  5 V rail
+  Servo ground (brown/black)    ->  GND rail
+
+---------------------------------------------------------------------
+5. RADAR (Acconeer XM125)
+---------------------------------------------------------------------
+
+  Radar TX      ->  ESP32 GPIO 25  (Serial2 RX)
+  Radar RX      ->  ESP32 GPIO 26  (Serial2 TX)
+  Radar WAKE_UP ->  ESP32 3V3
+  Radar supply  ->  5 V rail
+  Radar GND     ->  GND rail
+
+  Output text format, one line per measurement:
+      1 detected distances: 2.471099 m
+  The firmware reads up to the newline, finds the ':' and converts the
+  number from metres to millimetres.
+
+  Check the XM125 datasheet for the allowed supply voltage on your
+  module and for its other pins (interface select, reset), and
+  confirm they are wired for UART mode.
+
+---------------------------------------------------------------------
+6. POWER NOTES / RISKS
+---------------------------------------------------------------------
+
+  All loads run from the ESP32's 5 V pin, so the total current is
+  limited by whatever feeds the board (usually the USB port, often
+  about 500 mA). Typical draw is roughly:
+      28BYJ-48 stepper  ~ 200-250 mA while moving
+      Servo             ~ 100-500+ mA, with spikes when it moves
+      ESP32             ~ 80-250 mA (more with WiFi)
+      XM125 radar       see datasheet
+  Possible symptoms of an overloaded supply: ESP32 resets or
+  brown-outs, servo jitter, noisy or missing radar readings.
+
+  Ways to reduce the risk:
+    - Use a good USB power source, or feed 5 V from a separate supply
+      (2 A or more) into the rail, with its GND joined to the ESP32 GND.
+    - Add a 470 uF - 1000 uF capacitor across the servo 5 V and GND.
+    - Keep the stepper and servo off the radar's supply line if the
+      readings are noisy.
+    - Do not feed an external 5 V supply and USB into the ESP32 at the
+      same time unless the board has protection against it.
+
+---------------------------------------------------------------------
+7. SCAN BEHAVIOUR (summary)
+---------------------------------------------------------------------
+
+  - Start: stepper at 0 deg (centre), servo at 90 deg.
+  - Ground GPIO 14 (or send the character 'S' over USB serial) to scan.
+  - Stepper moves to -90 deg (-512 steps), then sweeps -90..+90 deg and
+    back, alternating direction each row.
+  - Servo steps from 90 deg to 170 deg in 5 deg increments, one row each.
+  - The servo is detached while the stepper sweeps, to avoid PWM jitter.
+  - At the end the servo returns to 90 deg and the stepper to centre.
+
+  The stepper has no home sensor: the position at power-up or reset is
+  treated as 0 deg. Point the radar straight ahead before powering on.
+
+---------------------------------------------------------------------
+8. SERIAL OUTPUT TO THE PC (115200 baud)
+---------------------------------------------------------------------
+
+  Data line:    <stepper_step>,<servo_angle>,<distance_mm>
+  Example:      -512,90,2471.1
+  Status lines start with '#' (for example #SCAN_START, #SCAN_END)
+  and should be ignored by the Python parser.
+
+  Close the Arduino Serial Monitor before running the Python viewer;
+  only one program can use the COM port at a time.
+
+---------------------------------------------------------------------
+9. SOFTWARE / LIBRARIES
+---------------------------------------------------------------------
+
+  Arduino IDE:   ESP32 board package, ESP32Servo, Stepper
+  Python:        pip install pyqtgraph PyQt5 PyOpenGL numpy pyserial
+
+  Files:
+    radar_scanner.ino        ESP32 firmware
+    radar_scanner_mapper.py  Python viewer (3D cloud, floor plan, boxes)
+
+---------------------------------------------------------------------
+10. KNOWN NOTES
+---------------------------------------------------------------------
+
+  - GPIO 5 is a boot strapping pin; it works for the ULN2003 input but
+    avoid pulling it low during reset.
+  - The XM125 beam is wide, so edges in the scan are soft.
+  - The 28BYJ-48 has gear backlash; rows scanned in opposite directions
+    can be shifted slightly (see BACKLASH_STEPS in the Python file).
+=====================================================================
